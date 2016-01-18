@@ -397,3 +397,113 @@ func BenchmarkRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+type AnonymousEmbedMessage struct {
+	SimpleMessage
+	Sender   Sender
+	Receiver Receiver
+	Stream   io.ReadWriteCloser
+}
+
+func TestAnonymousEmbeddedMessage(t *testing.T) {
+	client := func(t *testing.T, w Sender) {
+		remoteRecv, send := Pipe()
+		recv, remoteSend := Pipe()
+		bs, bsRemote := net.Pipe()
+
+		m1 := &AnonymousEmbedMessage{
+			SimpleMessage: SimpleMessage{Message: "This is a anonymous message"},
+			Sender:        remoteSend,
+			Receiver:      remoteRecv,
+			Stream:        bsRemote,
+		}
+
+		sendErr := w.Send(m1)
+		if sendErr != nil {
+			t.Fatalf("Error sending: %s", sendErr)
+		}
+
+		m2 := &SimpleMessage{}
+		receiveErr := recv.Receive(m2)
+		if receiveErr != nil {
+			t.Fatalf("Error receiving from message: %s", receiveErr)
+		}
+
+		if expected := "Return to sender"; expected != m2.Message {
+			t.Fatalf("Unexpected message\n\tExpected: %s\n\tActual: %s", expected, m2.Message)
+		}
+
+		m3 := &SimpleMessage{"Receive returned"}
+		sendErr = send.Send(m3)
+		if sendErr != nil {
+			t.Fatalf("Error sending return: %s", sendErr)
+		}
+
+		_, writeErr := bs.Write([]byte("Hello there server!"))
+		if writeErr != nil {
+			t.Fatalf("Error writing to byte stream: %s", writeErr)
+		}
+
+		readBytes := make([]byte, 30)
+		n, readErr := bs.Read(readBytes)
+		if readErr != nil {
+			t.Fatalf("Error reading from byte stream: %s", readErr)
+		}
+		if expected := "G'day client ☺"; string(readBytes[:n]) != expected {
+			t.Fatalf("Unexpected read value:\n\tExpected: %q\n\tActual: %q", expected, string(readBytes[:n]))
+		}
+
+		closeErr := bs.Close()
+		if closeErr != nil {
+			t.Fatalf("Error closing byte stream: %s", closeErr)
+		}
+	}
+	server := func(t *testing.T, r Receiver) {
+		m1 := &AnonymousEmbedMessage{}
+		receiveErr := r.Receive(m1)
+		if receiveErr != nil {
+			t.Fatalf("Error receiving: %s", receiveErr)
+		}
+
+		if expected := "This is a anonymous message"; m1.Message != expected {
+			t.Fatalf("Unexpected message\n\tExpected: %s\n\tActual: %s", expected, m1.Message)
+		}
+
+		m2 := &SimpleMessage{"Return to sender"}
+		sendErr := m1.Sender.Send(m2)
+		if sendErr != nil {
+			t.Fatalf("Error sending return: %s", sendErr)
+		}
+
+		m3 := &SimpleMessage{}
+		receiveErr = m1.Receiver.Receive(m3)
+		if receiveErr != nil {
+			t.Fatalf("Error receiving from message: %s", receiveErr)
+		}
+
+		if expected := "Receive returned"; expected != m3.Message {
+			t.Fatalf("Unexpected message\n\tExpected: %s\n\tActual: %s", expected, m3.Message)
+		}
+
+		readBytes := make([]byte, 30)
+		n, readErr := m1.Stream.Read(readBytes)
+		if readErr != nil {
+			t.Fatalf("Error reading from byte stream: %s", readErr)
+		}
+		if expected := "Hello there server!"; string(readBytes[:n]) != expected {
+			t.Fatalf("Unexpected read value:\n\tExpected: %q\n\tActual: %q", expected, string(readBytes[:n]))
+		}
+
+		_, writeErr := m1.Stream.Write([]byte("G'day client ☺"))
+		if writeErr != nil {
+			t.Fatalf("Error writing to byte stream: %s", writeErr)
+		}
+
+		closeErr := m1.Stream.Close()
+		if closeErr != nil {
+			t.Fatalf("Error closing byte stream: %s", closeErr)
+		}
+
+	}
+	SpawnPipeTestRoutines(t, client, server)
+}
